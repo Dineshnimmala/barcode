@@ -34,77 +34,30 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
     };
   }, []);
 
- const initializeScanner = async () => {
-  if (isInitializedRef.current || !isMountedRef.current) {
-    return;
-  }
-
-  let stream: MediaStream; // ✅ Declare stream outside
-
-  try {
-    isInitializedRef.current = true;
-    setError('');
-    setDebugInfo('Initializing camera...');
-    console.log('Requesting camera access...');
-
-    codeReaderRef.current = new BrowserMultiFormatReader();
-
-    const constraints = {
-      video: {
-        facingMode: 'environment',
-        width: { ideal: 1280, max: 1920 },
-        height: { ideal: 720, max: 1080 },
-        frameRate: { ideal: 30 }
-      }
-    };
-
-    stream = await navigator.mediaDevices.getUserMedia(constraints); // ✅ Uses outer stream
-    console.log('✅ Camera stream received:', stream);
-    setDebugInfo('✅ Camera access granted');
-
-    if (!isMountedRef.current) {
-      stream.getTracks().forEach(track => track.stop());
+  const initializeScanner = async () => {
+    if (isInitializedRef.current || !isMountedRef.current) {
       return;
     }
 
-    streamRef.current = stream;
-    setHasPermission(true);
+    try {
+      isInitializedRef.current = true;
+      setError('');
+      setDebugInfo('Initializing camera...');
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
+      // Create code reader instance
+      codeReaderRef.current = new BrowserMultiFormatReader();
 
-      await new Promise<void>((resolve, reject) => {
-        const video = videoRef.current!;
-        const onLoadedMetadata = () => {
-          video.removeEventListener('loadedmetadata', onLoadedMetadata);
-          video.removeEventListener('error', onError);
-          resolve();
-        };
-        const onError = (e: Event) => {
-          video.removeEventListener('loadedmetadata', onLoadedMetadata);
-          video.removeEventListener('error', onError);
-          reject(new Error('Video loading failed'));
-        };
-        video.addEventListener('loadedmetadata', onLoadedMetadata);
-        video.addEventListener('error', onError);
-      });
+      // Request camera access
+      const constraints = {
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
+          frameRate: { ideal: 30 }
+        }
+      };
 
-      await videoRef.current.play();
-      setDebugInfo('🎥 Video stream started');
-      setIsScanning(true);
-      startBarcodeScanning();
-    }
-  } catch (err) {
-    console.error('❌ Scanner initialization error:', err);
-    if (!isMountedRef.current) return;
-    setHasPermission(false);
-    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-    setError('Camera initialization failed: ' + errorMessage);
-    setDebugInfo('❌ Failed to access camera: ' + errorMessage);
-  }
-};
-
-
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
       if (!isMountedRef.current) {
         // Component unmounted, cleanup

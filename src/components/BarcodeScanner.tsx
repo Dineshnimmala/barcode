@@ -34,85 +34,76 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
     };
   }, []);
 
-  const initializeScanner = async () => {
-    if (isInitializedRef.current || !isMountedRef.current) {
-      return;
-    }
-
-    try {
-      isInitializedRef.current = true;
-      setError('');
-      setDebugInfo('Initializing camera...');
-
-      // Create code reader instance
-      codeReaderRef.current = new BrowserMultiFormatReader();
-
-      // Request camera access
-      const constraints = {
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          frameRate: { ideal: 30 }
-        }
-      };
-
-console.log('Requesting camera access...');
-
-try {
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  console.log('✅ Camera stream received:', stream);
-  setDebugInfo('✅ Camera access granted');
-
-  if (!isMountedRef.current) {
-    stream.getTracks().forEach(track => track.stop());
+ const initializeScanner = async () => {
+  if (isInitializedRef.current || !isMountedRef.current) {
     return;
   }
 
-  streamRef.current = stream;
-  setHasPermission(true);
+  let stream: MediaStream; // ✅ Declare stream outside
 
-  if (videoRef.current) {
-    videoRef.current.srcObject = stream;
+  try {
+    isInitializedRef.current = true;
+    setError('');
+    setDebugInfo('Initializing camera...');
+    console.log('Requesting camera access...');
 
-    // Wait for video to be ready
-    await new Promise<void>((resolve, reject) => {
-      if (!videoRef.current) {
-        reject(new Error('Video element not available'));
-        return;
+    codeReaderRef.current = new BrowserMultiFormatReader();
+
+    const constraints = {
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
+        frameRate: { ideal: 30 }
       }
+    };
 
-      const video = videoRef.current;
+    stream = await navigator.mediaDevices.getUserMedia(constraints); // ✅ Uses outer stream
+    console.log('✅ Camera stream received:', stream);
+    setDebugInfo('✅ Camera access granted');
 
-      const onLoadedMetadata = () => {
-        video.removeEventListener('loadedmetadata', onLoadedMetadata);
-        video.removeEventListener('error', onError);
-        resolve();
-      };
+    if (!isMountedRef.current) {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
 
-      const onError = (e: Event) => {
-        video.removeEventListener('loadedmetadata', onLoadedMetadata);
-        video.removeEventListener('error', onError);
-        reject(new Error('Video loading failed'));
-      };
+    streamRef.current = stream;
+    setHasPermission(true);
 
-      video.addEventListener('loadedmetadata', onLoadedMetadata);
-      video.addEventListener('error', onError);
-    });
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
 
-    await videoRef.current.play();
-    setDebugInfo('🎥 Video stream started');
-    setIsScanning(true);
-    startBarcodeScanning();
+      await new Promise<void>((resolve, reject) => {
+        const video = videoRef.current!;
+        const onLoadedMetadata = () => {
+          video.removeEventListener('loadedmetadata', onLoadedMetadata);
+          video.removeEventListener('error', onError);
+          resolve();
+        };
+        const onError = (e: Event) => {
+          video.removeEventListener('loadedmetadata', onLoadedMetadata);
+          video.removeEventListener('error', onError);
+          reject(new Error('Video loading failed'));
+        };
+        video.addEventListener('loadedmetadata', onLoadedMetadata);
+        video.addEventListener('error', onError);
+      });
+
+      await videoRef.current.play();
+      setDebugInfo('🎥 Video stream started');
+      setIsScanning(true);
+      startBarcodeScanning();
+    }
+  } catch (err) {
+    console.error('❌ Scanner initialization error:', err);
+    if (!isMountedRef.current) return;
+    setHasPermission(false);
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    setError('Camera initialization failed: ' + errorMessage);
+    setDebugInfo('❌ Failed to access camera: ' + errorMessage);
   }
-} catch (err) {
-  console.error('❌ Error getting camera:', err);
-  if (!isMountedRef.current) return;
-  setHasPermission(false);
-  const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-  setError('Camera initialization failed: ' + errorMessage);
-  setDebugInfo('❌ Failed to access camera: ' + errorMessage);
-}
+};
+
 
       
       if (!isMountedRef.current) {

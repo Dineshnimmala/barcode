@@ -57,7 +57,63 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
         }
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+console.log('Requesting camera access...');
+
+try {
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  console.log('✅ Camera stream received:', stream);
+  setDebugInfo('✅ Camera access granted');
+
+  if (!isMountedRef.current) {
+    stream.getTracks().forEach(track => track.stop());
+    return;
+  }
+
+  streamRef.current = stream;
+  setHasPermission(true);
+
+  if (videoRef.current) {
+    videoRef.current.srcObject = stream;
+
+    // Wait for video to be ready
+    await new Promise<void>((resolve, reject) => {
+      if (!videoRef.current) {
+        reject(new Error('Video element not available'));
+        return;
+      }
+
+      const video = videoRef.current;
+
+      const onLoadedMetadata = () => {
+        video.removeEventListener('loadedmetadata', onLoadedMetadata);
+        video.removeEventListener('error', onError);
+        resolve();
+      };
+
+      const onError = (e: Event) => {
+        video.removeEventListener('loadedmetadata', onLoadedMetadata);
+        video.removeEventListener('error', onError);
+        reject(new Error('Video loading failed'));
+      };
+
+      video.addEventListener('loadedmetadata', onLoadedMetadata);
+      video.addEventListener('error', onError);
+    });
+
+    await videoRef.current.play();
+    setDebugInfo('🎥 Video stream started');
+    setIsScanning(true);
+    startBarcodeScanning();
+  }
+} catch (err) {
+  console.error('❌ Error getting camera:', err);
+  if (!isMountedRef.current) return;
+  setHasPermission(false);
+  const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+  setError('Camera initialization failed: ' + errorMessage);
+  setDebugInfo('❌ Failed to access camera: ' + errorMessage);
+}
+
       
       if (!isMountedRef.current) {
         // Component unmounted, cleanup

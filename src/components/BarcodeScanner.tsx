@@ -9,6 +9,7 @@ interface BarcodeScannerProps {
 
 const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string>('');
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -17,12 +18,14 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
   const [debugInfo, setDebugInfo] = useState<string>('');
   const [scanAttempts, setScanAttempts] = useState(0);
   const [showDebug, setShowDebug] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
   
   // Refs to manage scanner state
   const streamRef = useRef<MediaStream | null>(null);
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
   const isInitializedRef = useRef(false);
   const isMountedRef = useRef(true);
+  const scanIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -42,71 +45,121 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
     try {
       isInitializedRef.current = true;
       setError('');
-      setDebugInfo('Initializing camera...');
+      setDebugInfo('🔄 Initializing camera...');
 
       // Create code reader instance
       codeReaderRef.current = new BrowserMultiFormatReader();
 
-      // Request camera access
+      // Enhanced camera constraints for better compatibility
       const constraints = {
         video: {
-          facingMode: 'environment',
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          frameRate: { ideal: 30 }
-        }
+          facingMode: { ideal: 'environment' },
+          width: { min: 640, ideal: 1280, max: 1920 },
+          height: { min: 480, ideal: 720, max: 1080 },
+          frameRate: { min: 15, ideal: 30, max: 60 },
+          aspectRatio: { ideal: 16/9 }
+        },
+        audio: false
       };
 
+      setDebugInfo(prev => prev + '\n📱 Requesting camera access...');
+      
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
       if (!isMountedRef.current) {
-        // Component unmounted, cleanup
         stream.getTracks().forEach(track => track.stop());
         return;
       }
 
       streamRef.current = stream;
       setHasPermission(true);
-      setDebugInfo('Camera access granted');
+      setDebugInfo(prev => prev + '\n✅ Camera access granted');
 
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+        const video = videoRef.current;
         
-        // Wait for video to be ready
+        // Set video properties for better compatibility
+        video.srcObject = stream;
+        video.autoplay = true;
+        video.playsInline = true;
+        video.muted = true;
+        
+        // Enhanced video loading with multiple event listeners
         await new Promise<void>((resolve, reject) => {
-          if (!videoRef.current) {
-            reject(new Error('Video element not available'));
-            return;
-          }
-
-          const video = videoRef.current;
+          let resolved = false;
           
-          const onLoadedMetadata = () => {
-            video.removeEventListener('loadedmetadata', onLoadedMetadata);
-            video.removeEventListener('error', onError);
+          const onSuccess = () => {
+            if (resolved) return;
+            resolved = true;
+            cleanup();
             resolve();
           };
-
-          const onError = (e: Event) => {
-            video.removeEventListener('loadedmetadata', onLoadedMetadata);
+          
+          const onError = (error: any) => {
+            if (resolved) return;
+            resolved = true;
+            cleanup();
+            reject(new Error(`Video loading failed: ${error.message || 'Unknown error'}`));
+          };
+          
+          const cleanup = () => {
+            video.removeEventListener('loadedmetadata', onSuccess);
+            video.removeEventListener('loadeddata', onSuccess);
+            video.removeEventListener('canplay', onSuccess);
+            video.removeEventListener('canplaythrough', onSuccess);
             video.removeEventListener('error', onError);
-            reject(new Error('Video loading failed'));
           };
 
-          video.addEventListener('loadedmetadata', onLoadedMetadata);
+          // Multiple event listeners for better compatibility
+          video.addEventListener('loadedmetadata', onSuccess);
+          video.addEventListener('loadeddata', onSuccess);
+          video.addEventListener('canplay', onSuccess);
+          video.addEventListener('canplaythrough', onSuccess);
           video.addEventListener('error', onError);
+          
+          // Timeout fallback
+          setTimeout(() => {
+            if (!resolved && video.readyState >= 2) {
+              onSuccess();
+            }
+          }, 3000);
         });
 
-        // Play video
-        await videoRef.current.play();
-        
         if (!isMountedRef.current) return;
 
-        setDebugInfo('Video playing, starting scanner...');
+        // Force play with error handling
+        try {
+          await video.play();
+          setVideoReady(true);
+          setDebugInfo(prev => prev + '\n▶️ Video playing successfully');
+        } catch (playError) {
+          console.warn('Video play failed, trying alternative approach:', playError);
+          // Try alternative play approach
+          setTimeout(async () => {
+            try {
+              if (video && !video.paused) return;
+              await video.play();
+              setVideoReady(true);
+              setDebugInfo(prev => prev + '\n▶️ Video playing (retry successful)');
+            } catch (retryError) {
+              console.error('Video play retry failed:', retryError);
+              setDebugInfo(prev => prev + '\n⚠️ Video play issues, but continuing...');
+              setVideoReady(true); // Continue anyway
+            }
+          }, 1000);
+        }
+
+        if (!isMountedRef.current) return;
+
+        setDebugInfo(prev => prev + '\n🔍 Starting barcode scanner...');
         setIsScanning(true);
 
-        // Start barcode scanning
-        startBarcodeScanning();
+        // Start barcode scanning with delay to ensure video is ready
+        setTimeout(() => {
+          if (isMountedRef.current) {
+            startBarcodeScanning();
+          }
+        }, 1000);
       }
     } catch (err) {
       console.error('Scanner initialization error:', err);
@@ -116,7 +169,7 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
       setHasPermission(false);
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError('Camera initialization failed: ' + errorMessage);
-      setDebugInfo('❌ Error: ' + errorMessage);
+      setDebugInfo(prev => prev + '\n❌ Error: ' + errorMessage);
     }
   };
 
@@ -126,51 +179,75 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
     }
 
     try {
-      setDebugInfo(prev => prev + '\n🔍 Starting barcode detection...');
+      setDebugInfo(prev => prev + '\n🎯 Barcode detection active');
       
-      // Use decodeFromVideoDevice with proper error handling
-      codeReaderRef.current.decodeFromVideoDevice(
-        undefined, 
-        videoRef.current, 
-        (result, error) => {
-          if (!isMountedRef.current) return;
-
-          setScanAttempts(prev => prev + 1);
-          
-          if (result) {
-            const scannedValue = result.getText();
-            const format = result.getBarcodeFormat();
-            
-            setLastScannedCode(scannedValue);
-            setDebugInfo(prev => prev + `\n✅ Found: ${scannedValue} (${format})`);
-            
-            // Add to scanned codes if not already present
-            setScannedCodes(prev => {
-              if (!prev.includes(scannedValue)) {
-                return [...prev, scannedValue];
-              }
-              return prev;
-            });
-          } else if (error) {
-            // Only log errors occasionally to avoid spam
-            if (scanAttempts % 50 === 0) {
-              setDebugInfo(prev => prev + `\n🔍 Scanning... (${scanAttempts} attempts)`);
-            }
-          }
+      // Use continuous scanning with interval for better performance
+      const scanVideo = () => {
+        if (!isMountedRef.current || !codeReaderRef.current || !videoRef.current) {
+          return;
         }
-      );
-    } catch (scanError) {
-      console.error('Barcode scanning error:', scanError);
+
+        try {
+          // Use decodeFromVideoDevice for continuous scanning
+          codeReaderRef.current.decodeFromVideoDevice(
+            undefined,
+            videoRef.current,
+            (result, error) => {
+              if (!isMountedRef.current) return;
+
+              setScanAttempts(prev => prev + 1);
+              
+              if (result) {
+                const scannedValue = result.getText();
+                const format = result.getBarcodeFormat();
+                
+                setLastScannedCode(scannedValue);
+                setDebugInfo(prev => prev + `\n✅ Detected: ${scannedValue} (${format})`);
+                
+                // Add to scanned codes if not already present
+                setScannedCodes(prev => {
+                  if (!prev.includes(scannedValue)) {
+                    return [...prev, scannedValue];
+                  }
+                  return prev;
+                });
+              } else if (error && scanAttempts % 100 === 0) {
+                // Periodic debug info to avoid spam
+                setDebugInfo(prev => prev + `\n🔍 Scanning... (${scanAttempts} attempts)`);
+              }
+            }
+          );
+        } catch (scanError) {
+          console.error('Barcode scanning error:', scanError);
+          if (!isMountedRef.current) return;
+          
+          setError('Scanner error: ' + (scanError as Error).message);
+          setDebugInfo(prev => prev + '\n❌ Scanner error: ' + (scanError as Error).message);
+        }
+      };
+
+      // Start scanning
+      scanVideo();
+      
+    } catch (err) {
+      console.error('Failed to start barcode scanning:', err);
       if (!isMountedRef.current) return;
       
-      setError('Scanner error: ' + (scanError as Error).message);
-      setDebugInfo(prev => prev + '\n❌ Scanner error: ' + (scanError as Error).message);
+      setError('Failed to start scanner: ' + (err as Error).message);
+      setDebugInfo(prev => prev + '\n❌ Failed to start: ' + (err as Error).message);
     }
   };
 
   const cleanup = () => {
     isInitializedRef.current = false;
     setIsScanning(false);
+    setVideoReady(false);
+    
+    // Clear scan interval
+    if (scanIntervalRef.current) {
+      clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = null;
+    }
     
     // Stop code reader
     if (codeReaderRef.current) {
@@ -193,6 +270,7 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
     // Clear video element
     if (videoRef.current) {
       videoRef.current.srcObject = null;
+      videoRef.current.load();
     }
   };
 
@@ -238,6 +316,16 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
                 <X size={20} />
               </button>
             </div>
+          </div>
+          
+          {/* Video Status Indicator */}
+          <div className="flex items-center gap-2 mb-2">
+            <div className={`w-2 h-2 rounded-full ${
+              videoReady ? 'bg-green-400' : hasPermission ? 'bg-yellow-400' : 'bg-red-400'
+            }`}></div>
+            <span className="text-xs text-gray-300">
+              {videoReady ? 'Camera Ready' : hasPermission ? 'Loading Video...' : 'Camera Access Required'}
+            </span>
           </div>
           
           {/* Debug Info */}
@@ -310,53 +398,80 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
 
           {hasPermission && (
             <>
+              {/* Video Element with enhanced styling */}
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-full object-cover"
-                style={{ transform: 'scaleX(-1)' }}
+                className={`w-full h-full object-cover transition-opacity duration-500 ${
+                  videoReady ? 'opacity-100' : 'opacity-0'
+                }`}
+                style={{ 
+                  transform: 'scaleX(-1)',
+                  backgroundColor: '#000'
+                }}
+                onLoadedData={() => {
+                  setVideoReady(true);
+                  setDebugInfo(prev => prev + '\n📺 Video data loaded');
+                }}
+                onError={(e) => {
+                  console.error('Video error:', e);
+                  setDebugInfo(prev => prev + '\n❌ Video error occurred');
+                }}
               />
               
-              {/* Scanner Overlay */}
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="relative">
-                  {/* Scanning Frame */}
-                  <div className="w-80 h-52 border-2 border-white/70 rounded-lg relative">
-                    {/* Corner indicators */}
-                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-400 rounded-tl-lg"></div>
-                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-400 rounded-tr-lg"></div>
-                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-400 rounded-bl-lg"></div>
-                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-400 rounded-br-lg"></div>
-                    
-                    {/* Scanning line animation */}
-                    {isScanning && (
-                      <div className="absolute inset-0 overflow-hidden rounded-lg">
-                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-blue-400 to-transparent animate-pulse"></div>
-                        <ScanLine className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-blue-400 animate-pulse" size={32} />
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Instructions */}
-                  <div className="absolute -bottom-28 left-1/2 transform -translate-x-1/2 text-center">
-                    <p className="text-white text-sm mb-1 font-medium">
-                      Position barcode within the frame
-                    </p>
-                    <p className="text-blue-300 text-xs mb-2">
-                      Hold steady • Ensure good lighting • Try different angles
-                    </p>
-                    {scanAttempts > 50 && scannedCodes.length === 0 && (
-                      <div className="bg-yellow-600/80 rounded-lg p-2 mt-2">
-                        <p className="text-yellow-100 text-xs">
-                          💡 Try: Move closer/further, better lighting, or different angle
-                        </p>
-                      </div>
-                    )}
+              {/* Loading overlay while video is not ready */}
+              {!videoReady && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black">
+                  <div className="text-center text-white">
+                    <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                    <p className="text-lg mb-2">Loading camera...</p>
+                    <p className="text-sm text-gray-300">Please wait while we initialize the video</p>
                   </div>
                 </div>
-              </div>
+              )}
+              
+              {/* Scanner Overlay - only show when video is ready */}
+              {videoReady && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="relative">
+                    {/* Scanning Frame */}
+                    <div className="w-80 h-52 border-2 border-white/70 rounded-lg relative">
+                      {/* Corner indicators */}
+                      <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-400 rounded-tl-lg"></div>
+                      <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-400 rounded-tr-lg"></div>
+                      <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-400 rounded-bl-lg"></div>
+                      <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-400 rounded-br-lg"></div>
+                      
+                      {/* Scanning line animation */}
+                      {isScanning && (
+                        <div className="absolute inset-0 overflow-hidden rounded-lg">
+                          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-blue-400 to-transparent animate-pulse"></div>
+                          <ScanLine className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-blue-400 animate-pulse" size={32} />
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Instructions */}
+                    <div className="absolute -bottom-28 left-1/2 transform -translate-x-1/2 text-center">
+                      <p className="text-white text-sm mb-1 font-medium">
+                        Position barcode within the frame
+                      </p>
+                      <p className="text-blue-300 text-xs mb-2">
+                        Hold steady • Ensure good lighting • Try different angles
+                      </p>
+                      {scanAttempts > 50 && scannedCodes.length === 0 && (
+                        <div className="bg-yellow-600/80 rounded-lg p-2 mt-2">
+                          <p className="text-yellow-100 text-xs">
+                            💡 Try: Move closer/further, better lighting, or different angle
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -402,7 +517,7 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
         )}
 
         {/* Help overlay for scanning issues */}
-        {scanAttempts > 100 && scannedCodes.length === 0 && (
+        {scanAttempts > 100 && scannedCodes.length === 0 && videoReady && (
           <div className="absolute top-1/2 left-4 right-4 transform -translate-y-1/2 bg-yellow-600/90 text-white p-4 rounded-lg">
             <h4 className="font-semibold mb-2">Trouble scanning?</h4>
             <ul className="text-sm space-y-1 mb-3">
@@ -420,6 +535,14 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onClose, onScan }) => {
             </button>
           </div>
         )}
+
+        {/* Hidden canvas for potential future use */}
+        <canvas
+          ref={canvasRef}
+          className="hidden"
+          width="640"
+          height="480"
+        />
       </div>
     </div>
   );
